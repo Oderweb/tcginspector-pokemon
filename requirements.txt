@@ -1,0 +1,14 @@
+# Core web framework (using older, pre-compiled versions)
+fastapi==0.68.0
+uvicorn==0.15.0
+
+# Image processing
+opencv-python-headless==4.5.5.64
+Pillow==9.5.0
+numpy==1.21.6
+
+# Data validation (older version that doesn't need Rust)
+pydantic==1.10.12
+
+# Utilities
+python-multipart==0.0.5

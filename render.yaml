@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: pokemon-inspector-api
+    env: docker
+    repo: https://github.com/yourusername/tcginspector-pokemon  # Update with your repo
+    region: oregon  # or your preferred region
+    plan: free  # Start with free tier
+    buildCommand: docker build -t pokemon-inspector .
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: PYTHON_VERSION
+        value: 3.11.5
+    healthCheckPath: /health
