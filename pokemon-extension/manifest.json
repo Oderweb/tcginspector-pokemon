@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Pokemon Card Inspector",
+  "version": "1.0",
+  "description": "Analyze Pokemon card authenticity with right-click",
+  "permissions": [
+    "contextMenus",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://pokemon-inspector.onrender.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content.js"]
+  }],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
