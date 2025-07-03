@@ -46,7 +46,24 @@ class CardAnalysisResponse(BaseModel):
     confidence_score: float
     issues_detected: List[str]
     suggested_action: str
+    analysis_id: Optional[str] = None
     debug_info: Optional[Dict] = None
+
+class FeedbackRequest(BaseModel):
+    analysis_id: str  # The ID of the analysis being corrected
+    actual_result: str  # "authentic", "possibly_fake", or "likely_fake" 
+    user_confidence: int  # 1-5 scale how confident user is
+    notes: Optional[str] = None  # Optional user comments
+
+class FeedbackResponse(BaseModel):
+    message: str
+    feedback_id: int
+
+class TrainingDataResponse(BaseModel):
+    total_examples: int
+    authentic_count: int
+    fake_count: int
+    examples: List[Dict]
 
 # Rate limiting configuration
 RATE_LIMIT_PER_DAY = 100
@@ -77,6 +94,23 @@ def init_db():
             ip_address TEXT PRIMARY KEY,
             daily_count INTEGER DEFAULT 0,
             last_reset_date DATE DEFAULT CURRENT_DATE
+        )
+    ''')
+    
+    # Feedback table for training data collection
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id INTEGER,
+            image_hash TEXT,
+            original_prediction TEXT,
+            original_confidence REAL,
+            actual_result TEXT,
+            user_confidence INTEGER,
+            notes TEXT,
+            ip_address TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (analysis_id) REFERENCES analysis_history (id)
         )
     ''')
     
@@ -188,17 +222,17 @@ class ImageProcessor:
         return image
 
 class PokemonAnalyzer:
-    """Pokemon card specific analysis"""
+    """Pokemon card specific analysis with improved heuristics"""
     
     def __init__(self):
         self.issues = []
     
     def analyze_blue_border(self, image: np.ndarray) -> float:
-        """Analyze Pokemon's characteristic blue border"""
+        """Analyze Pokemon's characteristic blue border - IMPROVED"""
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         height, width = hsv.shape[:2]
         
-        # Create border mask (outer 25 pixels)
+        # Create border mask (outer pixels)
         border_mask = np.zeros((height, width), dtype=np.uint8)
         border_width = min(25, min(height, width) // 15)
         
@@ -207,12 +241,18 @@ class PokemonAnalyzer:
         border_mask[:, :border_width] = 255  # Left
         border_mask[:, -border_width:] = 255  # Right
         
-        # Pokemon blue color range (HSV)
-        lower_blue = np.array([200, 120, 80])
-        upper_blue = np.array([220, 255, 200])
+        # EXPANDED Pokemon blue color range (HSV) - more permissive
+        lower_blue1 = np.array([200, 80, 60])   # Darker blue
+        upper_blue1 = np.array([230, 255, 255]) # Lighter blue
         
-        # Create blue mask
-        blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
+        # Also check for darker blue variants
+        lower_blue2 = np.array([180, 50, 40])
+        upper_blue2 = np.array([200, 200, 200])
+        
+        # Create blue masks
+        blue_mask1 = cv2.inRange(hsv, lower_blue1, upper_blue1)
+        blue_mask2 = cv2.inRange(hsv, lower_blue2, upper_blue2)
+        blue_mask = cv2.bitwise_or(blue_mask1, blue_mask2)
         
         # Combine with border mask
         border_blue = cv2.bitwise_and(blue_mask, border_mask)
@@ -223,10 +263,12 @@ class PokemonAnalyzer:
         
         blue_ratio = blue_pixels / total_border_pixels if total_border_pixels > 0 else 0
         
-        if blue_ratio < 0.4:
-            self.issues.append("Blue border color doesn't match authentic Pokemon cards")
+        # MORE LENIENT threshold for blue detection
+        if blue_ratio < 0.15:  # Changed from 0.4 to 0.15
+            self.issues.append(f"Blue border color doesn't match authentic Pokemon cards (detected: {blue_ratio:.3f})")
         
-        return min(blue_ratio * 1.5, 1.0)  # Boost good scores
+        # More generous scoring
+        return min(blue_ratio * 3.0, 1.0)  # Increased multiplier
     
     def analyze_print_quality(self, image: np.ndarray) -> float:
         """Analyze overall print quality and sharpness"""
@@ -236,10 +278,10 @@ class PokemonAnalyzer:
         laplacian = cv2.Laplacian(gray, cv2.CV_64F)
         sharpness = laplacian.var()
         
-        # Normalize sharpness score
-        sharpness_score = min(sharpness / 800.0, 1.0)
+        # Normalize sharpness score - more lenient
+        sharpness_score = min(sharpness / 500.0, 1.0)  # Reduced from 800
         
-        if sharpness_score < 0.4:
+        if sharpness_score < 0.3:  # Reduced from 0.4
             self.issues.append("Image appears blurry - possible low-quality print or photo")
         
         return sharpness_score
@@ -250,23 +292,25 @@ class PokemonAnalyzer:
         saturation = hsv[:, :, 1]
         mean_saturation = np.mean(saturation) / 255.0
         
-        # Pokemon cards typically have good color saturation
-        if mean_saturation < 0.3:
+        # More lenient Pokemon card saturation check
+        if mean_saturation < 0.2:  # Reduced from 0.3
             self.issues.append("Color saturation unusually low for Pokemon cards")
-            return mean_saturation / 0.3
-        elif mean_saturation > 0.95:
+            return mean_saturation / 0.2
+        elif mean_saturation > 0.98:  # Increased from 0.95
             self.issues.append("Color saturation unnaturally high - possible digital manipulation")
-            return (1.0 - mean_saturation) / 0.05
+            return (1.0 - mean_saturation) / 0.02
         
-        return min(mean_saturation * 1.2, 1.0)
+        return min(mean_saturation * 1.5, 1.0)  # More generous
     
     def analyze_border_consistency(self, image: np.ndarray) -> float:
-        """Analyze border thickness and consistency"""
+        """Analyze border thickness and consistency - IMPROVED"""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
+        
+        # Use gentler edge detection
+        edges = cv2.Canny(gray, 30, 100)  # Reduced from 50, 150
         
         height, width = edges.shape
-        border_width = min(30, min(height, width) // 12)
+        border_width = min(20, min(height, width) // 15)  # Reduced from 30
         
         # Sample border regions
         top_border = edges[:border_width, :]
@@ -282,19 +326,20 @@ class PokemonAnalyzer:
             np.sum(right_border) / right_border.size
         ]
         
-        # Check consistency
+        # Check consistency - more lenient
         mean_density = np.mean(densities)
         std_density = np.std(densities)
         
         if mean_density > 0:
             consistency = 1.0 - (std_density / mean_density)
         else:
-            consistency = 0.5
+            consistency = 0.8  # Give benefit of doubt
         
-        if consistency < 0.7:
-            self.issues.append("Border thickness appears inconsistent")
+        # More lenient threshold
+        if consistency < 0.4:  # Changed from 0.7
+            self.issues.append(f"Border thickness appears inconsistent (score: {consistency:.3f})")
         
-        return max(consistency, 0.0)
+        return max(consistency, 0.3)  # Minimum score of 0.3
     
     def analyze_aspect_ratio(self, image: np.ndarray) -> float:
         """Check if image has correct Pokemon card aspect ratio"""
@@ -305,9 +350,10 @@ class PokemonAnalyzer:
         expected_ratio = 0.716
         ratio_diff = abs(actual_ratio - expected_ratio) / expected_ratio
         
-        ratio_score = max(0.0, 1.0 - ratio_diff * 2)
+        # More lenient ratio checking
+        ratio_score = max(0.0, 1.0 - ratio_diff * 1.5)  # Reduced from 2.0
         
-        if ratio_score < 0.6:
+        if ratio_score < 0.5:  # Reduced from 0.6
             self.issues.append(f"Card dimensions don't match Pokemon card proportions (got {actual_ratio:.3f}, expected ~{expected_ratio:.3f})")
         
         return ratio_score
@@ -327,7 +373,7 @@ class PokemonAnalyzer:
             # Score based on reasonable number of energy symbols
             energy_score = min(len(circles) / 6.0, 1.0)
         else:
-            energy_score = 0.3  # Neutral score if no circles detected
+            energy_score = 0.5  # Neutral score if no circles detected (was 0.3)
         
         return energy_score
     
@@ -349,24 +395,24 @@ class PokemonAnalyzer:
             'energy_symbols': self.analyze_energy_symbols(processed_image)
         }
         
-        # Define weights for different factors
+        # UPDATED weights - reduce emphasis on problematic checks
         weights = {
-            'blue_border': 0.25,      # Most important for Pokemon
-            'print_quality': 0.20,
-            'color_saturation': 0.20,
-            'border_consistency': 0.15,
-            'aspect_ratio': 0.15,
-            'energy_symbols': 0.05
+            'blue_border': 0.20,        # Reduced from 0.25
+            'print_quality': 0.25,      # Increased from 0.20
+            'color_saturation': 0.25,   # Increased from 0.20
+            'border_consistency': 0.10, # Reduced from 0.15
+            'aspect_ratio': 0.15,       # Same
+            'energy_symbols': 0.05      # Same
         }
         
         # Calculate weighted confidence score
         confidence = sum(scores[key] * weights[key] for key in scores.keys())
         
-        # Determine result
-        if confidence >= 0.75:
+        # MORE LENIENT result determination
+        if confidence >= 0.65:  # Reduced from 0.75
             result = "authentic"
             suggested_action = "Card appears authentic based on visual analysis"
-        elif confidence >= 0.55:
+        elif confidence >= 0.45:  # Reduced from 0.55
             result = "possibly_fake"
             suggested_action = "Some concerns detected. Compare with known authentic Pokemon cards or consult a professional grader"
         else:
@@ -396,7 +442,7 @@ pokemon_analyzer = PokemonAnalyzer()
 async def rate_limit_middleware(request: Request, call_next):
     """Rate limiting middleware"""
     # Skip rate limiting for health checks and docs
-    if request.url.path in ["/health", "/docs", "/openapi.json"]:
+    if request.url.path in ["/health", "/docs", "/openapi.json", "/", "/stats", "/training-data", "/analysis-accuracy"]:
         response = await call_next(request)
         return response
     
@@ -411,7 +457,7 @@ async def rate_limit_middleware(request: Request, call_next):
             return JSONResponse(
                 status_code=429,
                 content={
-                    "detail": "Daily analysis limit exceeded. You get 1 free analysis per day.",
+                    "detail": "Daily analysis limit exceeded. You get 100 free analyses per day.",
                     "reset_time": "Midnight UTC"
                 }
             )
@@ -438,7 +484,7 @@ async def analyze_pokemon_card(request: CardAnalysisRequest, http_request: Reque
         conn = sqlite3.connect('pokemon_inspector.db')
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT result, confidence_score, issues_detected FROM analysis_history WHERE image_hash = ?",
+            "SELECT id, result, confidence_score, issues_detected FROM analysis_history WHERE image_hash = ?",
             (image_hash,)
         )
         cached_result = cursor.fetchone()
@@ -447,10 +493,11 @@ async def analyze_pokemon_card(request: CardAnalysisRequest, http_request: Reque
             logger.info(f"Returning cached result for hash: {image_hash}")
             # Don't increment usage for cached results
             return CardAnalysisResponse(
-                result=cached_result[0],
-                confidence_score=cached_result[1],
-                issues_detected=json.loads(cached_result[2]),
-                suggested_action="Cached analysis result"
+                result=cached_result[1],
+                confidence_score=cached_result[2],
+                issues_detected=json.loads(cached_result[3]),
+                suggested_action="Cached analysis result",
+                analysis_id=str(cached_result[0])
             )
         
         # Perform new analysis
@@ -459,7 +506,7 @@ async def analyze_pokemon_card(request: CardAnalysisRequest, http_request: Reque
         # Increment usage count
         increment_usage(client_ip)
         
-        # Store result in database
+        # Store result in database and get the ID
         cursor.execute(
             """INSERT INTO analysis_history 
                (ip_address, image_hash, result, confidence_score, issues_detected) 
@@ -467,14 +514,184 @@ async def analyze_pokemon_card(request: CardAnalysisRequest, http_request: Reque
             (client_ip, image_hash, analysis_result["result"], 
              analysis_result["confidence_score"], json.dumps(analysis_result["issues_detected"]))
         )
+        
+        # Get the analysis ID
+        analysis_id = cursor.lastrowid
         conn.commit()
         conn.close()
+        
+        # Add analysis_id to the response
+        analysis_result["analysis_id"] = str(analysis_id)
         
         return CardAnalysisResponse(**analysis_result)
         
     except Exception as e:
         logger.error(f"Error analyzing Pokemon card: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+@app.post("/feedback", response_model=FeedbackResponse)
+async def submit_feedback(feedback: FeedbackRequest, request: Request):
+    """Submit feedback to improve our analysis"""
+    try:
+        client_ip = request.client.host
+        if hasattr(request, 'headers') and 'x-forwarded-for' in request.headers:
+            client_ip = request.headers['x-forwarded-for'].split(',')[0].strip()
+        
+        conn = sqlite3.connect('pokemon_inspector.db')
+        cursor = conn.cursor()
+        
+        # Get original analysis details
+        cursor.execute(
+            "SELECT image_hash, result, confidence_score FROM analysis_history WHERE id = ?",
+            (feedback.analysis_id,)
+        )
+        original_analysis = cursor.fetchone()
+        
+        if not original_analysis:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+        
+        image_hash, original_prediction, original_confidence = original_analysis
+        
+        # Insert feedback
+        cursor.execute(
+            """INSERT INTO feedback 
+               (analysis_id, image_hash, original_prediction, original_confidence, 
+                actual_result, user_confidence, notes, ip_address) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (feedback.analysis_id, image_hash, original_prediction, original_confidence,
+             feedback.actual_result, feedback.user_confidence, feedback.notes, client_ip)
+        )
+        
+        feedback_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Feedback received: Analysis {feedback.analysis_id} -> {feedback.actual_result}")
+        
+        return FeedbackResponse(
+            message="Thank you for your feedback! This helps improve our analysis.",
+            feedback_id=feedback_id
+        )
+        
+    except Exception as e:
+        logger.error(f"Error submitting feedback: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to submit feedback: {str(e)}")
+
+@app.get("/training-data")
+async def get_training_data():
+    """Get aggregated training data for analysis improvement"""
+    try:
+        conn = sqlite3.connect('pokemon_inspector.db')
+        cursor = conn.cursor()
+        
+        # Get feedback statistics
+        cursor.execute("SELECT COUNT(*) FROM feedback")
+        total_feedback = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT actual_result, COUNT(*) FROM feedback GROUP BY actual_result")
+        result_breakdown = dict(cursor.fetchall())
+        
+        # Get recent feedback examples (anonymized)
+        cursor.execute("""
+            SELECT f.original_prediction, f.original_confidence, f.actual_result, 
+                   f.user_confidence, f.notes, f.timestamp
+            FROM feedback f
+            ORDER BY f.timestamp DESC
+            LIMIT 20
+        """)
+        
+        recent_feedback = []
+        for row in cursor.fetchall():
+            recent_feedback.append({
+                "original_prediction": row[0],
+                "original_confidence": row[1],
+                "actual_result": row[2],
+                "user_confidence": row[3],
+                "notes": row[4],
+                "timestamp": row[5]
+            })
+        
+        # Calculate accuracy
+        cursor.execute("""
+            SELECT 
+                SUM(CASE WHEN original_prediction = actual_result THEN 1 ELSE 0 END) as correct,
+                COUNT(*) as total
+            FROM feedback
+        """)
+        accuracy_data = cursor.fetchone()
+        accuracy = (accuracy_data[0] / accuracy_data[1] * 100) if accuracy_data[1] > 0 else 0
+        
+        conn.close()
+        
+        return {
+            "total_feedback": total_feedback,
+            "result_breakdown": result_breakdown,
+            "current_accuracy": f"{accuracy:.1f}%",
+            "recent_feedback": recent_feedback,
+            "authentic_count": result_breakdown.get("authentic", 0),
+            "fake_count": result_breakdown.get("likely_fake", 0) + result_breakdown.get("possibly_fake", 0)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting training data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get training data: {str(e)}")
+
+@app.get("/analysis-accuracy")
+async def get_analysis_accuracy():
+    """Get accuracy metrics for our analysis"""
+    try:
+        conn = sqlite3.connect('pokemon_inspector.db')
+        cursor = conn.cursor()
+        
+        # Overall accuracy
+        cursor.execute("""
+            SELECT 
+                original_prediction,
+                actual_result,
+                COUNT(*) as count,
+                AVG(original_confidence) as avg_confidence
+            FROM feedback
+            GROUP BY original_prediction, actual_result
+            ORDER BY original_prediction, actual_result
+        """)
+        
+        confusion_matrix = []
+        for row in cursor.fetchall():
+            confusion_matrix.append({
+                "predicted": row[0],
+                "actual": row[1],
+                "count": row[2],
+                "avg_confidence": round(row[3], 3)
+            })
+        
+        # Most common mistakes
+        cursor.execute("""
+            SELECT original_prediction, actual_result, COUNT(*) as mistakes
+            FROM feedback
+            WHERE original_prediction != actual_result
+            GROUP BY original_prediction, actual_result
+            ORDER BY mistakes DESC
+            LIMIT 10
+        """)
+        
+        common_mistakes = []
+        for row in cursor.fetchall():
+            common_mistakes.append({
+                "predicted": row[0],
+                "should_be": row[1],
+                "frequency": row[2]
+            })
+        
+        conn.close()
+        
+        return {
+            "confusion_matrix": confusion_matrix,
+            "common_mistakes": common_mistakes
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting accuracy data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 async def health_check():
@@ -504,12 +721,17 @@ async def get_stats():
     cursor.execute("SELECT COUNT(*) FROM analysis_history WHERE DATE(timestamp) = ?", (today,))
     today_analyses = cursor.fetchone()[0]
     
+    # Feedback stats
+    cursor.execute("SELECT COUNT(*) FROM feedback")
+    total_feedback = cursor.fetchone()[0]
+    
     conn.close()
     
     return {
         "total_analyses": total_analyses,
         "today_analyses": today_analyses,
         "results_breakdown": results_breakdown,
+        "total_feedback": total_feedback,
         "rate_limit": f"{RATE_LIMIT_PER_DAY} per day"
     }
 
@@ -522,11 +744,14 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "analyze": "POST /analyze - Analyze a Pokemon card image",
+            "feedback": "POST /feedback - Submit feedback on analysis results",
+            "training-data": "GET /training-data - View collected training data",
+            "analysis-accuracy": "GET /analysis-accuracy - View accuracy metrics",
             "health": "GET /health - Service health check",
             "stats": "GET /stats - Usage statistics",
             "docs": "GET /docs - API documentation"
         },
-        "rate_limit": f"{RATE_LIMIT_PER_DAY} free analysis per day"
+        "rate_limit": f"{RATE_LIMIT_PER_DAY} free analyses per day"
     }
 
 if __name__ == "__main__":
