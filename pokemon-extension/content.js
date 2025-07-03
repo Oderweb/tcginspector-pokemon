@@ -25,7 +25,7 @@ async function analyzeImage(imageUrl) {
     const result = await response.json();
     
     if (response.status === 429) {
-      showNotification("Daily limit reached", "You've used your 1 free analysis today!");
+      showNotification("Daily limit reached", "You've used your daily analyses!");
       return;
     }
     
@@ -71,24 +71,26 @@ function showAnalysisResult(result) {
     z-index: 10000;
     font-family: Arial, sans-serif;
   `;
+  
+  const resultColor = result.result === 'authentic' ? '#28a745' : 
+                     result.result === 'possibly_fake' ? '#ffc107' : '#dc3545';
 
+  // Create feedback section
   const feedbackSection = `
     <div style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px;">
       <div style="font-size: 12px; color: #666; margin-bottom: 10px;">
         Was this analysis correct?
       </div>
-      <button onclick="submitFeedback('${result.analysis_id}', 'authentic')" 
-              style="background: #28a745; color: white; border: none; padding: 4px 8px; margin: 2px; border-radius: 3px; font-size: 11px;">✓ Authentic</button>
-      <button onclick="submitFeedback('${result.analysis_id}', 'likely_fake')" 
-              style="background: #dc3545; color: white; border: none; padding: 4px 8px; margin: 2px; border-radius: 3px; font-size: 11px;">✗ Fake</button>
+      <button onclick="window.submitFeedback('${result.analysis_id}', 'authentic')" 
+              style="background: #28a745; color: white; border: none; padding: 4px 8px; margin: 2px; border-radius: 3px; font-size: 11px; cursor: pointer;">✓ Authentic</button>
+      <button onclick="window.submitFeedback('${result.analysis_id}', 'likely_fake')" 
+              style="background: #dc3545; color: white; border: none; padding: 4px 8px; margin: 2px; border-radius: 3px; font-size: 11px; cursor: pointer;">✗ Fake</button>
+      <button onclick="window.submitFeedback('${result.analysis_id}', 'possibly_fake')" 
+              style="background: #ffc107; color: black; border: none; padding: 4px 8px; margin: 2px; border-radius: 3px; font-size: 11px; cursor: pointer;">? Unsure</button>
     </div>
   `;
   
-  overlay.innerHTML = overlay.innerHTML.replace('</button>', '</button>' + feedbackSection);
-  
-  const resultColor = result.result === 'authentic' ? '#28a745' : 
-                     result.result === 'possibly_fake' ? '#ffc107' : '#dc3545';
-  
+  // Build the complete overlay content
   overlay.innerHTML = `
     <div style="border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 10px;">
       <h3 style="margin: 0; color: #0066cc;">🔍 Pokemon Card Analysis</h3>
@@ -110,6 +112,7 @@ function showAnalysisResult(result) {
     <div style="font-size: 12px; color: #666; margin-bottom: 15px;">
       ${result.suggested_action}
     </div>
+    ${result.analysis_id ? feedbackSection : ''}
     <button onclick="this.parentElement.remove()" style="
       background: #0066cc; 
       color: white; 
@@ -118,9 +121,11 @@ function showAnalysisResult(result) {
       border-radius: 5px; 
       cursor: pointer;
       float: right;
+      margin-top: 10px;
     ">Close</button>
   `;
 
+  // Define the feedback function globally
   window.submitFeedback = async function(analysisId, actualResult) {
     try {
       const response = await fetch('https://pokemon-inspector.onrender.com/feedback', {
@@ -134,20 +139,28 @@ function showAnalysisResult(result) {
       });
       
       if (response.ok) {
-        alert('Thanks for the feedback! This helps improve our analysis.');
+        // Replace feedback buttons with thank you message
+        const feedbackDiv = overlay.querySelector('div[style*="border-top"]');
+        if (feedbackDiv) {
+          feedbackDiv.innerHTML = '<div style="font-size: 12px; color: #28a745; text-align: center;">✓ Thank you for your feedback!</div>';
+        }
+      } else {
+        console.error('Feedback submission failed:', response.status);
       }
     } catch (error) {
       console.error('Feedback error:', error);
     }
+  };
   
+  // Add overlay to page
   document.body.appendChild(overlay);
   
-  // Auto-remove after 10 seconds
+  // Auto-remove after 15 seconds
   setTimeout(() => {
     if (overlay.parentElement) {
       overlay.remove();
     }
-  }, 10000);
+  }, 15000);
 }
 
 function showNotification(title, message) {
@@ -163,6 +176,7 @@ function showNotification(title, message) {
     border-radius: 5px;
     z-index: 10000;
     max-width: 300px;
+    font-family: Arial, sans-serif;
   `;
   notification.innerHTML = `<strong>${title}</strong><br>${message}`;
   document.body.appendChild(notification);
