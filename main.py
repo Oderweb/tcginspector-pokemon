@@ -49,7 +49,7 @@ class CardAnalysisResponse(BaseModel):
     debug_info: Optional[Dict] = None
 
 # Rate limiting configuration
-RATE_LIMIT_PER_DAY = 1
+RATE_LIMIT_PER_DAY = 100
 RATE_LIMIT_RESET_HOUR = 0  # Reset at midnight UTC
 
 # Database initialization
