@@ -71,6 +71,20 @@ function showAnalysisResult(result) {
     z-index: 10000;
     font-family: Arial, sans-serif;
   `;
+
+  const feedbackSection = `
+    <div style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px;">
+      <div style="font-size: 12px; color: #666; margin-bottom: 10px;">
+        Was this analysis correct?
+      </div>
+      <button onclick="submitFeedback('${result.analysis_id}', 'authentic')" 
+              style="background: #28a745; color: white; border: none; padding: 4px 8px; margin: 2px; border-radius: 3px; font-size: 11px;">✓ Authentic</button>
+      <button onclick="submitFeedback('${result.analysis_id}', 'likely_fake')" 
+              style="background: #dc3545; color: white; border: none; padding: 4px 8px; margin: 2px; border-radius: 3px; font-size: 11px;">✗ Fake</button>
+    </div>
+  `;
+  
+  overlay.innerHTML = overlay.innerHTML.replace('</button>', '</button>' + feedbackSection);
   
   const resultColor = result.result === 'authentic' ? '#28a745' : 
                      result.result === 'possibly_fake' ? '#ffc107' : '#dc3545';
@@ -106,6 +120,25 @@ function showAnalysisResult(result) {
       float: right;
     ">Close</button>
   `;
+
+  window.submitFeedback = async function(analysisId, actualResult) {
+    try {
+      const response = await fetch('https://pokemon-inspector.onrender.com/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          analysis_id: analysisId,
+          actual_result: actualResult,
+          user_confidence: 4  // High confidence
+        })
+      });
+      
+      if (response.ok) {
+        alert('Thanks for the feedback! This helps improve our analysis.');
+      }
+    } catch (error) {
+      console.error('Feedback error:', error);
+    }
   
   document.body.appendChild(overlay);
   
