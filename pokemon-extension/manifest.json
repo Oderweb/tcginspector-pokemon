@@ -8,7 +8,8 @@
     "activeTab"
   ],
   "host_permissions": [
-    "https://pokemon-inspector.onrender.com/*"
+    "https://pokemon-inspector.onrender.com/*",
+    "https://*.onrender.com/*"
   ],
   "background": {
     "service_worker": "background.js"
